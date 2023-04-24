@@ -1,0 +1,71 @@
+import boto3
+import uuid 
+
+s3_client = boto3.client('s3')
+rekognition_client = boto3.client('rekognition')
+sqs_client = boto3.client('sqs')
+sns_client = boto3.client('sns')
+dynamodb_client = boto3.client('dynamodb')
+
+def lambda_handler(event, context):
+
+    s3_bucket = event['Records'][0]['s3']['bucket']['name']
+    s3_object_key = event['Records'][0]['s3']['object']['key']
+
+    try:
+        image = get_s3_image(s3_bucket, s3_object_key)
+
+        labels = detect_labels(image)
+
+        process_labels(labels, s3_object_key)
+
+        message = '\n'
+        for label in labels:
+            message += f'Label: {label["Name"]}, Confidence: {label["Confidence"]}%\n'
+
+        sns_topic_arn = '*************************'
+        sns_client.publish(
+            TopicArn=sns_topic_arn,
+            Message=f'Labels processed successfully for object: {s3_object_key}\n\n{message}'
+        )
+
+        return {
+            'statusCode': 200,
+            'body': 'Labels processed successfully.'
+        }
+    except Exception as e:
+        print(f'Error processing labels: {str(e)}')
+        return {
+            'statusCode': 500,
+            'body': 'Error processing labels.'
+        }
+
+def get_s3_image(bucket, key):
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    image = response['Body'].read()
+    return image
+
+def detect_labels(image):
+    response = rekognition_client.detect_labels(
+        Image={'Bytes': image},
+        MaxLabels=3,
+        MinConfidence=70
+    )
+    labels = response['Labels']
+    return labels
+
+def process_labels(labels, object_key):
+    for label in labels:
+        print(f'Label: {label["Name"]}, Confidence: {label["Confidence"]}%')
+        print(f'Labels processed successfully for object: {object_key}')
+
+        image_id = str(uuid.uuid4())
+        dynamodb_client.put_item(
+            TableName='*********', 
+            Item={
+                'image_id': {'S': image_id},
+                'object_key': {'S': object_key},
+                'label': {'S': label['Name']},
+                'confidence': {'N': str(label['Confidence'])}
+            }
+        )
